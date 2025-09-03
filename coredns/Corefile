@@ -1,0 +1,15 @@
+. {
+    log
+    errors
+    health
+    ready
+    cache 60
+    forward . 1.1.1.1 8.8.8.8
+}
+
+redfin.dev:53 {
+    log
+    errors
+    reload
+    file /zones/redfin.dev.db
+}

@@ -1,0 +1,25 @@
+$ORIGIN redfin.dev.
+$TTL 60
+
+@   IN SOA  dns.redfin.dev. admin.redfin.dev. (
+        2025090102 3600 900 1209600 60 )
+    IN NS   dns.redfin.dev.
+
+; 네임서버/루트
+dns      IN A 192.168.0.123
+@        IN A 192.168.0.123
+
+; 게이트웨이/서비스
+api      IN A 192.168.0.123
+kibana   IN A 192.168.0.123
+jenkins  IN A 192.168.0.123
+qdrant   IN A 192.168.0.123
+mongo    IN A 192.168.0.123
+es       IN A 192.168.0.123
+es-trans IN A 192.168.0.123
+rag      IN A 192.168.0.66
+ui       IN A 192.168.0.41
+
+; (선택) 서비스 디스커버리 포트 표기
+_rag._tcp IN SRV 10 0 8030 rag.redfin.dev.
+_ui._tcp IN SRC 10 0 3000 ui.redfin.dev.

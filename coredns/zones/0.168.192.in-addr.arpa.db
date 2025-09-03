@@ -1,0 +1,11 @@
+$ORIGIN 0.168.192.in-addr.arpa.
+$TTL 60
+
+@   IN SOA dns.redfin.dev. admin.redfin.dev. (
+        2025090101 3600 900 1209600 60 )
+
+    IN NS  dns.redfin.dev.
+
+123 IN PTR dns.redfin.dev.
+123 IN PTR api.redfin.dev.   ; 하나만 두는 것을 권장
+66  IN PTR rag.redfin.dev.

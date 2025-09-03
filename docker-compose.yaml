@@ -1,0 +1,212 @@
+---
+volumes:
+  jenkins_home:
+  mongo_data:
+  es_data:
+  qdrant_data:
+  
+networks:
+  redfin_net:
+    driver: bridge
+  
+services:
+  # ===== Nginx =====
+  nginx:
+    image: nginx:1.27-alpine   # 최신 안정화 버전
+    container_name: redfin-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "27017:27017" # Mongo TCP Stream
+      - "9200:9200"   # ES HTTP Stream
+      - "9300:9300"   # ES transport Stream
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/stream.d:/etc/nginx/stream.d:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+      - ./nginx/logs:/var/log/nginx
+    networks: [redfin_net]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    dns:
+      - 192.168.0.123
+    healthcheck:
+      test: ["CMD-SHELL", "nginx -t || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ===== Core DNS =====
+  coredns:
+    image: coredns/coredns:1.11.1
+    container_name: redfin-coredns
+    restart: unless-stopped
+    ports:
+      - "53:53/udp"
+      - "1053:53/tcp"
+      - "9153:9153/tcp"
+    volumes:
+      - ./coredns/Corefile:/Corefile:ro
+      - ./coredns/zones:/zones:ro
+    command: ["-conf", "/Corefile"]
+    networks: [redfin_net]
+
+  # ===== MongoDB =====
+  mongodb:
+    image: mongo:7
+    container_name: mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+      MONGO_APP_USERNAME: ${MONGO_APP_USERNAME}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD}
+      MONGO_APP_DB: ${MONGO_APP_DB}
+      MONGO_URI: ${MONGO_URI}
+      TZ: ${TZ}
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ ping: 1}).ok"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks:
+      - redfin_net
+
+  # ===== MongoDB Express =====
+  mongo-express:
+    image: mongo-express:1
+    container_name: mongo-express
+    restart: unless-stopped
+    environment:
+      # --- DB 접속 자격: 둘 중 하나만 사용 ---
+
+      # 1) URL 방식 (권장) 
+      ME_CONFIG_MONGODB_URL: 'mongodb://${MONGO_INITDB_ROOT_USERNAME}:${MONGO_INITDB_ROOT_PASSWORD}@mongodb:27017/'
+
+      # 2) 관리자 계정 방식 
+      # ME_CONFIG_MONGODB_ADMINUSERNAME: ${MONGO_INITDB_ROOT_USERNAME}
+      # ME_CONFIG_MONGODB_ADMINPASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+      
+      # 웹 기본 인증 (HTTP Basic Auth)
+      ME_CONFIG_BASICAUTH: ${ME_CONFIG_BASICAUTH}
+      ME_CONFIG_BASICAUTH_USERNAME: ${ME_CONFIG_BASICAUTH_USERNAME}
+      ME_CONFIG_BASICAUTH_PASSWORD: ${ME_CONFIG_BASICAUTH_PASSWORD}
+    
+      TZ: ${TZ}
+    ports:
+      - "18082:8081"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - redfin_net
+
+  # ===== Elasticsearch =====
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION:-8.14.0}
+    container_name: elasticsearch
+    restart: unless-stopped
+    ports:
+      - "${ES_PORT:-9200}:9200"
+      - "9300:9300"
+    environment:
+      - discovery.type=single-node
+      # 개발용: 보안 비활성화 (프로덕션에서는 true로 두고 사용자/비밀번호 설정 권장)
+      - xpack.security.enabled=false
+      # JVM 힙 (호스트 메모리 여유에 맞춰 조정)
+      - ES_JAVA_OPTS=-Xms${ES_JAVA_HEAP:-1g} -Xmx${ES_JAVA_HEAP:-1g}
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile:  { soft: 65536, hard: 65536 }
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200 >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks: [redfin_net]
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:${KIBANA_VERSION:-8.14.0}
+    container_name: kibana
+    restart: unless-stopped
+    ports:
+      - "${KIBANA_PORT:-5601}:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - SERVER_PUBLICBASEURL=http://localhost:${KIBANA_PORT:-5601}
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5601 >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+    networks: [redfin_net]
+
+  # ===== Jenkins =====
+  jenkins:
+    image: jenkins/jenkins:lts-jdk17
+    container_name: jenkins
+    restart: unless-stopped
+    user: root                                # 플러그인/볼륨 권한 이슈 방지
+    environment:
+      - JAVA_OPTS=-Xmx1024m
+      - JENKINS_OPTS=--prefix=/jenkins        # 경로 기반 프록시 사용 시 필수
+      - TZ=${TZ}
+    ports:
+      - "18081:8080"                          # 필요 시 외부 직통 접근
+      - "50000:50000"                         # JNLP 에이전트(필요 시)
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock  # Jenkins에서 docker 사용
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/jenkins/login || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 20
+    networks: [redfin_net]
+
+  # ===== Qdrant =====
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    environment:
+      QDRANT__SERVICE__HOST: "0.0.0.0"
+      QDRANT__SERVICE__HTTP_PORT: "${QDRANT_HTTP_PORT:-6333}"
+      QDRANT__SERVICE__GRPC_PORT: "${QDRANT_GRPC_PORT:-6334}"
+      TZ: "${TZ}"
+      # 스냅샷·저장 옵션(필요 시 주석 해제)
+      # QDRANT__STORAGE__ON_DISK_PAYLOAD: "true"
+      # QDRANT__STORAGE__OPTIMIZERS__DEFAULT_SEGMENT_NUMBER: "2"
+    ports:
+      - "${QDRANT_HTTP_PORT:-6333}:6333"   # HTTP API
+      - "${QDRANT_GRPC_PORT:-6334}:6334"   # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:6333/readyz >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks: [redfin_net]
+
+
+
+
+
+
+
+
+
+
+
+
